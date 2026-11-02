@@ -31,9 +31,9 @@ const MAX_TIMEOUT_MS = 120000;
 const MIN_TIMEOUT_MS = 5000;
 const ROUTE_PREFIX = '/plugins/fengniao-company-search';
 const MAX_BODY_BYTES = 64 * 1024;
-const MAX_RENDER_CHARS = 16000;
+const MAX_RENDER_CHARS = 120000;
 const SEARCH_LIMIT = 20;
-const USER_AGENT = 'dsh-fengniao-company-search/1.0';
+const USER_AGENT = 'dsh-fengniao-company-search/1.1';
 
 /** Promisified `execFile` backing the Windows registry environment fallback. */
 const execFileAsync = promisify(execFile);
@@ -201,7 +201,10 @@ function normalizeConfig(raw) {
   let baseUrl = text(config.baseUrl, DEFAULT_BASE_URL).replace(/\/+$/u, '');
   try {
     const parsed = new URL(baseUrl);
-    if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') baseUrl = DEFAULT_BASE_URL;
+    // The upstream API takes the key in the query string, so plain HTTP is only
+    // tolerated for a loopback debug endpoint.
+    const loopback = /^(?:localhost|127\.0\.0\.1|\[::1\]|::1)$/u.test(parsed.hostname);
+    if (parsed.protocol !== 'https:' && !(parsed.protocol === 'http:' && loopback)) baseUrl = DEFAULT_BASE_URL;
   } catch {
     baseUrl = DEFAULT_BASE_URL;
   }
@@ -211,6 +214,9 @@ function normalizeConfig(raw) {
     apiKeyEnv: text(config.apiKeyEnv, DEFAULT_API_KEY_ENV),
     baseUrl,
     timeoutMs: timeoutOf(config.timeoutMs),
+    // Environment variables are a legacy fallback only; the credential store
+    // stays authoritative. Set allowEnvFallback: false to ignore them entirely.
+    allowEnvFallback: config.allowEnvFallback !== false,
   };
 }
 
@@ -222,7 +228,14 @@ function maskKey(key) {
   return `••••${value.slice(-4)}`;
 }
 
-/** Resolve the key from the credential store or the launch environment. */
+/** Read the legacy environment key: the launch environment first, then the persisted Windows value. */
+async function readEnvironmentKey(config) {
+  const fromProcess = typeof process.env[config.apiKeyEnv] === 'string' ? process.env[config.apiKeyEnv].trim() : '';
+  if (fromProcess !== '') return fromProcess;
+  return await readPersistedWindowsEnv(config.apiKeyEnv);
+}
+
+/** Resolve the key from the credential store or the legacy launch environment. */
 async function readStoredKey(ctx, config) {
   const credentials = ctx.get('credentials');
   if (credentials !== void 0 && typeof credentials.resolve === 'function') {
@@ -230,16 +243,21 @@ async function readStoredKey(ctx, config) {
       const resolved = await credentials.resolve(config.credentialRef);
       const value = typeof resolved === 'string' ? resolved : resolved?.value;
       if (typeof value === 'string' && value.trim() !== '') {
-        return { key: value.trim(), source: 'credential' };
+        // The provider layers env/.env under its managed file; keep that visible so
+        // the card never claims a store entry for an ambient variable.
+        const providerSource =
+          typeof resolved === 'object' && resolved !== null && typeof resolved.source === 'string'
+            ? resolved.source
+            : 'file';
+        return { key: value.trim(), source: providerSource === 'file' ? 'credential' : 'credentialEnv' };
       }
     } catch {
       // Fall through to the environment.
     }
   }
-  const fromProcess = typeof process.env[config.apiKeyEnv] === 'string' ? process.env[config.apiKeyEnv].trim() : '';
-  if (fromProcess !== '') return { key: fromProcess, source: 'env' };
-  const persisted = await readPersistedWindowsEnv(config.apiKeyEnv);
-  if (persisted !== '') return { key: persisted, source: 'env' };
+  if (!config.allowEnvFallback) return { key: '', source: 'none' };
+  const fromEnvironment = await readEnvironmentKey(config);
+  if (fromEnvironment !== '') return { key: fromEnvironment, source: 'env' };
   return { key: '', source: 'none' };
 }
 
@@ -252,6 +270,7 @@ async function resolveApiKey(ctx, config) {
 /** Key status for the settings card; never returns the key itself. */
 async function keyStatus(ctx, config) {
   const resolved = await resolveApiKey(ctx, config);
+  const envKey = await readEnvironmentKey(config);
   return {
     ok: true,
     configured: resolved.key !== '',
@@ -259,6 +278,9 @@ async function keyStatus(ctx, config) {
     hint: maskKey(resolved.key),
     baseUrl: config.baseUrl,
     credentialRef: config.credentialRef,
+    apiKeyEnv: config.apiKeyEnv,
+    allowEnvFallback: config.allowEnvFallback,
+    envAvailable: envKey !== '',
   };
 }
 
@@ -294,8 +316,10 @@ async function callApi({ config, apiKey, endpoint, params, signal }) {
       payload = undefined;
     }
     if (!response.ok) {
-      const detail = typeof payload?.msg === 'string' && payload.msg !== '' ? payload.msg : `HTTP ${response.status}`;
-      throw new FengniaoApiError(`风鸟接口 HTTP ${response.status}：${detail}`, {
+      const detail = typeof payload?.msg === 'string' && payload.msg !== '' ? payload.msg : '';
+      const message =
+        detail === '' ? `风鸟接口 HTTP ${response.status}` : `风鸟接口 HTTP ${response.status}：${detail}`;
+      throw new FengniaoApiError(message, {
         httpStatus: response.status,
         apiCode: payload?.code,
       });
@@ -326,7 +350,7 @@ function describeApiFailure(payload) {
     if (/上限|额度|次数/u.test(message)) {
       return `${message}。当前账号当日接口额度已用完；额度以风鸟 Web 端 API Key 页面展示为准，不要重试。`;
     }
-    return `${message}。API Key 未配置或无效：请在 DSH「插件」页打开“风鸟企业查询”，在配置卡片中粘贴风鸟 Web 端生成的个人 API Key（账户设置 → API Key），或设置环境变量 FN_API_KEY。`;
+    return `${message}。API Key 未配置或无效：请在 DSH「插件」页打开“风鸟企业查询”，在配置卡片中粘贴风鸟 Web 端生成的个人 API Key（账户设置 → API Key）；如果 Key 在旧环境变量里，点「从环境变量导入到凭据库」。`;
   }
   if (code === 8888) {
     return `${message}。entid 或参数错误：请先调用 fengniao_search_company 重新获取 entid，再重试本维度查询。`;
@@ -432,6 +456,48 @@ function dimensionState(data) {
   return Object.keys(data).length === 0 ? 'empty' : 'unknown';
 }
 
+/**
+ * Company name carried by a single-profile dimension payload (basic_info and
+ * similar), or '' when the payload only lists related records. Only the subject
+ * object is inspected, so a shareholder/investment name is never mistaken for
+ * the queried company.
+ * @param {unknown} data - the upstream dimension payload.
+ * @returns {string} the trimmed company name, or ''.
+ */
+function payloadCompanyName(data) {
+  if (data === null || typeof data !== 'object' || Array.isArray(data)) return '';
+  for (const candidate of [data.apiData, data.result, data]) {
+    if (candidate === null || typeof candidate !== 'object' || Array.isArray(candidate)) continue;
+    for (const key of ['entName', 'entname', 'companyName', 'company_name', 'ent_name']) {
+      const value = candidate[key];
+      if (typeof value === 'string' && value.trim() !== '') return value.trim();
+    }
+  }
+  return '';
+}
+
+/** Bounded record count of one dimension payload, for the conversation card. */
+function countRecords(data) {
+  const seen = new Set();
+  const count = (value, depth) => {
+    if (Array.isArray(value)) return value.length;
+    if (value === null || value === undefined) return 0;
+    if (typeof value !== 'object' || depth > 3 || seen.has(value)) return null;
+    seen.add(value);
+    for (const key of ['totalCount', 'total', 'count']) {
+      const total = Number(value[key]);
+      if (Number.isFinite(total)) return total;
+    }
+    for (const key of ['apiData', 'result', 'data', 'records', 'list', 'items', 'rows']) {
+      if (!Object.hasOwn(value, key)) continue;
+      const nested = count(value[key], depth + 1);
+      if (nested !== null) return nested;
+    }
+    return Object.keys(value).length > 0 ? null : 0;
+  };
+  return count(data, 0);
+}
+
 /** Render one dimension result as a readable header plus the upstream payload. */
 function renderDimension(value) {
   const hint = DIMENSIONS[value.dimension]?.hint ?? '';
@@ -477,11 +543,34 @@ function registerTools(ctx, config) {
         properties: {
           query: { type: 'string' },
           count: { type: 'integer' },
-          candidates: { type: 'array', items: { type: 'object', additionalProperties: true } },
+          candidates: {
+            type: 'array',
+            items: {
+              type: 'object',
+              additionalProperties: false,
+              properties: {
+                name: { type: 'string' },
+                entid: { type: 'string' },
+                status: { type: 'string' },
+                raw: { type: 'object', additionalProperties: true },
+              },
+            },
+          },
         },
         required: ['query', 'count', 'candidates'],
       },
       render: (_args, value) => [{ type: 'text', text: renderSearch(value) }],
+      // Durable card facts: survive a spilled (disk-backed) model-facing result.
+      presentationMeta: (_args, value) => ({
+        kind: 'search',
+        query: typeof value.query === 'string' ? value.query.slice(0, 200) : value.query,
+        count: value.count,
+        candidates: value.candidates.slice(0, 20).map((candidate) => ({
+          ...(typeof candidate.name === 'string' ? { name: candidate.name.slice(0, 200) } : {}),
+          ...(typeof candidate.entid === 'string' ? { entid: candidate.entid.slice(0, 200) } : {}),
+          ...(typeof candidate.status === 'string' ? { status: candidate.status.slice(0, 200) } : {}),
+        })),
+      }),
     },
     timeoutMs: config.timeoutMs + 10000,
     isConcurrencySafe: () => true,
@@ -542,6 +631,22 @@ function registerTools(ctx, config) {
         required: ['dimension', 'label', 'apiCode', 'success', 'state', 'truncated'],
       },
       render: (_args, value) => [{ type: 'text', text: renderDimension(value) }],
+      // Durable card facts: the raw dimension payload can be huge or spilled.
+      presentationMeta: (_args, value) => {
+        const companyName = payloadCompanyName(value.data);
+        return {
+        kind: 'dimension',
+        dimension: value.dimension,
+        label: value.label,
+        apiCode: value.apiCode,
+        success: value.success,
+        state: value.state,
+        ...(value.truncated === true ? { truncated: true } : {}),
+        ...(companyName === '' ? {} : { companyName: companyName.slice(0, 200) }),
+        ...(value.message === undefined ? {} : { message: value.message.slice(0, 500) }),
+        recordCount: countRecords(value.data),
+        };
+      },
     },
     timeoutMs: config.timeoutMs + 10000,
     isConcurrencySafe: () => true,
@@ -587,14 +692,14 @@ function registerTools(ctx, config) {
 }
 
 /** Exported for local rendering checks and tests; not part of the plugin contract. */
-export { dimensionState, parseRegValueLine, renderDimension, renderSearch };
+export { countRecords, dimensionState, parseRegValueLine, renderDimension, renderSearch };
 
 const API_KEY_MISSING_MESSAGE = [
   '尚未配置风鸟 API Key。',
   '获取方式：登录风鸟 Web 端，在「账户设置 → API Key」生成个人 API Key（完整 Key 只展示一次）。',
-  '配置方式（任选其一）：',
-  '1) 在 DSH「插件」页打开“风鸟企业查询”，在配置卡片中粘贴 API Key 并保存（推荐，写入本机 Harness 凭据库）；',
-  '2) 设置环境变量 FN_API_KEY 后重启 Harness；',
+  '配置方式（推荐第 1 种，不要再用环境变量）：',
+  '1) 在 DSH「插件」页打开“风鸟企业查询”，在配置卡片中粘贴 API Key 并保存（写入本机 Harness 凭据库，不落配置文件、不回显）；',
+  '2) 如果 Key 仍在旧的环境变量里：在插件页卡片点「从环境变量导入到凭据库」；或设置环境变量后重启 Harness（旧方式，仅作兜底）；',
   '3) 在本 profile 的 cordis.patch.yml 中为 fengniao-company-search 行设置 config.apiKey。',
 ].join('\n');
 
@@ -617,7 +722,9 @@ function readJsonBody(req) {
     req.on('data', (chunk) => {
       size += chunk.length;
       if (size > MAX_BODY_BYTES) {
-        reject(new Error('请求体过大'));
+        const error = new Error('请求体过大');
+        error.statusCode = 413;
+        reject(error);
         req.destroy();
         return;
       }
@@ -641,7 +748,7 @@ function readJsonBody(req) {
 async function writeApiKey(ctx, config, apiKey) {
   const credentials = ctx.get('credentials');
   if (credentials === void 0 || typeof credentials.set !== 'function') {
-    throw new Error('Harness 凭据服务不可用，无法保存 API Key；请改用环境变量 FN_API_KEY 或插件配置 apiKey。');
+    throw new Error('Harness 凭据服务不可用，无法保存 API Key；请在本 profile 的 cordis.patch.yml 里设置 config.apiKey（临时兜底）。');
   }
   if (apiKey === '') {
     if (typeof credentials.unset !== 'function') {
@@ -682,15 +789,38 @@ function registerRoutes(ctx, webServer, config) {
       }
       if (req.method === 'POST' && sub === '/settings') {
         const body = await readJsonBody(req);
+        let imported = false;
         if (body.clear === true) {
           await writeApiKey(ctx, config, '');
+        } else if (body.importFromEnv === true) {
+          // One-click migration: copy the legacy environment key into the
+          // Harness credential store without ever returning it to the page.
+          const envKey = await readEnvironmentKey(config);
+          if (envKey === '') {
+            sendJson(res, 200, {
+              ok: false,
+              error: `环境变量 ${config.apiKeyEnv} 中没有可导入的 Key；请直接把 Key 粘贴到输入框保存。`,
+            });
+            return;
+          }
+          await writeApiKey(ctx, config, envKey);
+          imported = true;
         } else if (typeof body.apiKey === 'string') {
-          await writeApiKey(ctx, config, body.apiKey.trim());
+          const apiKey = body.apiKey.trim();
+          if (apiKey === '') {
+            sendJson(res, 200, { ok: false, error: 'API Key 不能为空；要清除已保存的 Key 请传 clear: true。' });
+            return;
+          }
+          await writeApiKey(ctx, config, apiKey);
         } else {
-          sendJson(res, 200, { ok: false, error: '缺少 apiKey 或 clear 字段' });
+          sendJson(res, 200, { ok: false, error: '缺少 apiKey、clear 或 importFromEnv 字段' });
           return;
         }
-        sendJson(res, 200, { ...(await keyStatus(ctx, config)), saved: true });
+        sendJson(res, 200, {
+          ...(await keyStatus(ctx, config)),
+          saved: true,
+          ...(imported ? { imported: true } : {}),
+        });
         return;
       }
       if (req.method === 'POST' && sub === '/test') {
@@ -736,7 +866,8 @@ function registerRoutes(ctx, webServer, config) {
       }
       sendJson(res, 404, { ok: false, error: 'not found' });
     } catch (error) {
-      sendJson(res, 500, { ok: false, error: error instanceof Error ? error.message : String(error) });
+      const status = typeof error?.statusCode === 'number' ? error.statusCode : 500;
+      sendJson(res, status, { ok: false, error: error instanceof Error ? error.message : String(error) });
     }
   };
   return webServer.register({ kind: 'prefix', path: ROUTE_PREFIX, handler });
@@ -754,12 +885,14 @@ export const inject = ['tools'];
  * followed by a reactive `ctx.inject` that fires when the service mounts.
  */
 function mountSettingsRoutes(ctx, config) {
-  let mounted = false;
+  // Track the server instance, not a boolean latch: a re-created webServer must
+  // get the routes registered again after the old service (and its route) is gone.
+  let registeredServer = null;
   const mount = (hostCtx) => {
-    if (mounted) return;
     const webServer = hostCtx.get('webServer');
     if (webServer === void 0 || typeof webServer.register !== 'function') return;
-    mounted = true;
+    if (registeredServer === webServer) return;
+    registeredServer = webServer;
     hostCtx.effect(() => registerRoutes(hostCtx, webServer, config), 'fengniao: settings routes');
   };
   if (typeof ctx.inject === 'function') {
@@ -767,7 +900,7 @@ function mountSettingsRoutes(ctx, config) {
   }
   // The service is often already live at activation (reload/HMR) — register now.
   mount(ctx);
-  if (!mounted) {
+  if (registeredServer === null) {
     console.info(`${TAG} webServer not available yet; settings routes will mount when it appears`);
   }
 }
