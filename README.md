@@ -5,7 +5,7 @@
 [![Version](https://img.shields.io/badge/version-1.1.0-blue?style=flat-square)](package.json)
 [![License](https://img.shields.io/badge/license-MIT-green?style=flat-square)](LICENSE)
 [![Node](https://img.shields.io/badge/node-%3E%3D20-339933?style=flat-square)](package.json)
-[![DSH](https://img.shields.io/badge/DSH-0.2.1--rc.3%2B-4D6BFE?style=flat-square)](#兼容性)
+[![DSH](https://img.shields.io/badge/DSH-0.2.1--rc.5%2B-4D6BFE?style=flat-square)](#兼容性)
 
 > **English** — Riskbird (风鸟) China company lookup for DeepSeek Harness (DSH). Two native agent tools resolve a Chinese company name to a Riskbird `entid` and fetch one of 11 dimensions for it: business registration, shareholders, executives, outbound investments, registration changes, court enforcement, dishonest judgment debtor, consumption restriction, abnormal operation, serious illegality and administrative penalties. The API key is configured on the plugin page and stored in the Harness credential store. Zero npm dependencies.
 
@@ -134,7 +134,7 @@ Key 的解析优先级：
 
 ## 兼容性、安全与隐私
 
-- Node.js ≥ 20（DSH 内置 Node 即可）；DSH 版本范围由 `package.json` 的 `engines.dsh` 声明（`>=0.2.1-rc.3 <0.3.0-0`），装错版本时 DSH 会直接拒绝安装。
+- Node.js ≥ 20（DSH 内置 Node 即可）；DSH 版本范围由 `package.json` 的 `engines.dsh` 声明（`>=0.2.1-rc.5 <0.3.0-0`），装错版本时 DSH 会直接拒绝安装。
 - 只从配置 / Harness 凭据库 / 环境变量读取 Key，不读取其他插件或用户目录里的配置；Key 不写日志、不回显给页面（页面只显示尾号）。
 - 风鸟接口要求把 Key 放在 URL 查询参数（`apikey=...`）里，这是上游限制；因此 Key 可能出现在上游/代理的访问日志中。
 - 配置路由注册在 DSH 本机 Web 服务上（同源），并要求自定义请求头 `x-fengniao-plugin: 1`，跨站页面无法在不触发 CORS 预检的情况下伪造请求。
