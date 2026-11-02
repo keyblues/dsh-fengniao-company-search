@@ -31,7 +31,7 @@
 3. 在「包名或地址」输入框里粘贴本仓库地址：
 
    ```text
-   https://github.com/keyblues/dsh-plugin-fengniao-company-search
+   https://github.com/keyblues/dsh-fengniao-company-search
    ```
 
 4. 点「安装」，等待下载完成（需要本机能访问 github.com）；
@@ -41,9 +41,9 @@
 
 | 场景 | 「包名或地址」怎么填 |
 | --- | --- |
-| 能正常访问 GitHub（推荐） | `https://github.com/keyblues/dsh-plugin-fengniao-company-search` |
+| 能正常访问 GitHub（推荐） | `https://github.com/keyblues/dsh-fengniao-company-search` |
 | GitHub 连不上 | 先 `git clone` 本仓库，再填本地目录的绝对路径；DSH 会以 `link:` 方式安装该目录 |
-| 想让 Agent 代劳 | 在对话框里直接说「安装插件 https://github.com/keyblues/dsh-plugin-fengniao-company-search」 |
+| 想让 Agent 代劳 | 在对话框里直接说「安装插件 https://github.com/keyblues/dsh-fengniao-company-search」 |
 
 补充说明：
 
