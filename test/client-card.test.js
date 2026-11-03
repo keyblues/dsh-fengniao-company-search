@@ -150,7 +150,7 @@ async function loadClient() {
 
   await import(`../client.js?t=${Date.now()}`);
   assert.ok(definition, 'client.js must call window.__ModuleLoader__.load');
-  assert.equal(definition.id, '@local/fengniao-company-search');
+  assert.equal(definition.id, 'dsh-fengniao-company-search');
 
   const app = definition.factory((name) => {
     if (name === 'react') return react;
@@ -229,7 +229,7 @@ test('client half registers the credential card and both tool cards', async () =
   const { registrations, dictionaries } = await loadClient();
   const bySlot = (name) => registrations.filter((entry) => entry.options.name === name);
   assert.equal(bySlot('plugins.bundle.config').length, 1);
-  assert.equal(bySlot('plugins.bundle.config')[0].options.key, '@local/fengniao-company-search');
+  assert.equal(bySlot('plugins.bundle.config')[0].options.key, 'dsh-fengniao-company-search');
 
   const toolviews = bySlot('tool.call.toolview');
   assert.deepEqual(

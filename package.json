@@ -1,5 +1,5 @@
 {
-  "name": "@local/fengniao-company-search",
+  "name": "dsh-fengniao-company-search",
   "version": "1.1.0",
   "private": true,
   "description": "DeepSeek Harness (DSH) plugin: Fengniao (Riskbird) China company lookup — business registration, shareholders, executives, investments, changes and judicial/operating risk dimensions, with an API key configurable in the Plugins page. DSH 插件：风鸟企业查询（工商/股东/高管/对外投资/变更/司法与经营风险），插件页内配置 API Key。",

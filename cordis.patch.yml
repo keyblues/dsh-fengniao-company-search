@@ -18,7 +18,7 @@
 # 下载包默认使用生产环境地址；如需内部联调再覆盖 baseUrl。
 - insert:
     - id: fengniao-company-search
-      name: '@local/fengniao-company-search'
+      name: 'dsh-fengniao-company-search'
       config:
         baseUrl: https://m.riskbird.com/prod-qbb-api
         credentialRef: FENGNIAO_API_KEY

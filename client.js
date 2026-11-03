@@ -10,7 +10,7 @@
  * written to the Harness credential store and never sent back to the page.
  */
 window.__ModuleLoader__.load({
-  id: '@local/fengniao-company-search',
+  id: 'dsh-fengniao-company-search',
   factory(require) {
     const React = require('react');
     const h = React.createElement;
@@ -1191,7 +1191,7 @@ window.__ModuleLoader__.load({
       }
       ctx.effect(() => {
         const tag = document.createElement('style');
-        tag.dataset.plugin = '@local/fengniao-company-search';
+        tag.dataset.plugin = 'dsh-fengniao-company-search';
         tag.textContent = CSS;
         document.head.appendChild(tag);
         return () => {
@@ -1202,7 +1202,7 @@ window.__ModuleLoader__.load({
         ctx.slots.register(
           {
             name: 'plugins.bundle.config',
-            key: '@local/fengniao-company-search',
+            key: 'dsh-fengniao-company-search',
             locale: NS,
           },
           FengniaoConfigCard,
