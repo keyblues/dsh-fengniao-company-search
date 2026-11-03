@@ -1,11 +1,13 @@
 # 风鸟企业查询 · DSH 插件
 
+[![npm version](https://img.shields.io/npm/v/dsh-fengniao-company-search?style=flat-square)](https://www.npmjs.com/package/dsh-fengniao-company-search)
+[![npm downloads](https://img.shields.io/npm/dw/dsh-fengniao-company-search?style=flat-square)](https://www.npmjs.com/package/dsh-fengniao-company-search)
 [![DSH Plugin](https://img.shields.io/badge/DSH-Plugin-4c6ef5?style=flat-square)](#)
 [![DeepSeek Harness](https://img.shields.io/badge/DeepSeek-Harness-5b6bff?style=flat-square)](https://github.com/deepseek-ai/deepseek-harness)
-[![Version](https://img.shields.io/badge/version-1.1.0-blue?style=flat-square)](package.json)
 [![License](https://img.shields.io/badge/license-MIT-green?style=flat-square)](LICENSE)
 [![Node](https://img.shields.io/badge/node-%3E%3D20-339933?style=flat-square)](package.json)
 [![DSH](https://img.shields.io/badge/DSH-0.2.1--rc.5%2B-4D6BFE?style=flat-square)](#兼容性)
+[![release](https://img.shields.io/github/v/release/keyblues/dsh-fengniao-company-search?style=flat-square)](https://github.com/keyblues/dsh-fengniao-company-search/releases)
 
 > **English** — Riskbird (风鸟) China company lookup for DeepSeek Harness (DSH). Two native agent tools resolve a Chinese company name to a Riskbird `entid` and fetch one of 11 dimensions for it: business registration, shareholders, executives, outbound investments, registration changes, court enforcement, dishonest judgment debtor, consumption restriction, abnormal operation, serious illegality and administrative penalties. The API key is configured on the plugin page and stored in the Harness credential store. Zero npm dependencies.
 
@@ -26,6 +28,28 @@
 - **同源安全路由**：配置接口只注册在本机 DSH Web 服务上并要求自定义请求头，跨站页面无法静默改写 Key
 
 ## 安装
+
+### 从 npm 安装（推荐）
+
+已发布到 npm：[`dsh-fengniao-company-search`](https://www.npmjs.com/package/dsh-fengniao-company-search)。
+
+在 Harness 里用插件管理器安装这个 bundle，target 写 npm 包名（可带版本）：
+
+```text
+plugin_manager install_bundle  target: dsh-fengniao-company-search
+# 或固定版本
+plugin_manager install_bundle  target: dsh-fengniao-company-search@1.1.0
+```
+
+### 从 GitHub Release 安装（离线、固定版本）
+
+从 [Releases](https://github.com/keyblues/dsh-fengniao-company-search/releases) 下载 `dsh-fengniao-company-search-<version>.tgz`，在插件管理器里填该文件的绝对路径，或：
+
+```text
+plugin_manager install_bundle  target: <下载的 .tgz 绝对路径>
+```
+
+### 从 GitHub 仓库安装
 
 DSH Desktop 支持直接从 GitHub 仓库安装：
 
@@ -155,6 +179,24 @@ locale/{zh,en}.json       插件管理器里的标题与描述
 icon.svg                  插件图标
 test/plugin.test.js       输出契约、错误码、凭据与设置路由的回归测试
 test/client-card.test.js  配置卡片与对话卡片的渲染测试
+```
+
+## 发布与 GitHub 联动
+
+发布到 npm 走 GitHub 联动：`.github/workflows/publish.yml` 在推送 `v*` tag 时用 OIDC（npm Trusted Publishing）执行 `npm publish --provenance`，并把打好的 `.tgz` 附到对应的 GitHub Release。
+
+Trusted Publishing 配置（`npm trust github`：仓库 `keyblues/dsh-fengniao-company-search`、workflow `publish.yml`、权限 publish）；之后每次发版只需：
+
+```bash
+npm version patch|minor|major
+git push --follow-tags
+```
+
+首次发布是在包还不存在时手动做的（此时无法配置 Trusted Publishing）：
+
+```bash
+npm login
+npm publish --access public     # prepublishOnly 会先跑 node --test
 ```
 
 ## License
