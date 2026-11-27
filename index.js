@@ -14,18 +14,13 @@
  *   POST {prefix}/test      → one live probe against the upstream API
  *
  * API key resolution order: config.apiKey → Harness credentials
- * (config.credentialRef, default FENGNIAO_API_KEY) → environment variable
- * (config.apiKeyEnv, default FN_API_KEY). The key travels as the upstream
- * `apikey` query parameter required by the upstream API.
+ * (config.credentialRef, default FENGNIAO_API_KEY). The upstream API requires
+ * the key in the `apikey` query parameter.
  */
-
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
 
 const TAG = '[fengniao-company-search]';
 const DEFAULT_BASE_URL = 'https://m.riskbird.com/prod-qbb-api';
 const DEFAULT_CREDENTIAL_REF = 'FENGNIAO_API_KEY';
-const DEFAULT_API_KEY_ENV = 'FN_API_KEY';
 const DEFAULT_TIMEOUT_MS = 30000;
 const MAX_TIMEOUT_MS = 120000;
 const MIN_TIMEOUT_MS = 5000;
@@ -35,65 +30,6 @@ const MAX_RENDER_CHARS = 120000;
 const SEARCH_LIMIT = 20;
 const USER_AGENT = 'dsh-fengniao-company-search/1.1';
 
-/** Promisified `execFile` backing the Windows registry environment fallback. */
-const execFileAsync = promisify(execFile);
-/** Short-lived cache of persisted Windows environment values, keyed by name. */
-const persistedEnvCache = new Map();
-
-/**
- * Extract the value of one `reg query` data line (`NAME    REG_SZ    value`).
- * Splitting on runs of spaces would lose values that contain them and would
- * return the type token (`REG_SZ`) for an empty value, so the type token is
- * matched explicitly and everything after it is the value.
- * @param {string} line - one trimmed data line.
- * @param {string} name - the queried variable name.
- * @returns {string} the value, or `''` when the line carries none.
- */
-function parseRegValueLine(line, name) {
-  const match = /^\s*(REG_[A-Za-z0-9_]+)\s*([\s\S]*)$/u.exec(line.slice(name.length));
-  return match === null ? '' : match[2].trim();
-}
-
-/**
- * Read a Windows environment variable the user persisted (User or Machine
- * scope) straight from the registry. The GUI can be launched before a
- * `setx`/Settings change reaches new processes, so `process.env` may lag by one
- * launch; reading the registry makes a saved FN_API_KEY work immediately.
- * At most one `reg query` per name per 30s.
- */
-async function readPersistedWindowsEnv(name) {
-  if (process.platform !== 'win32' || name === '') return '';
-  const cached = persistedEnvCache.get(name);
-  if (cached !== undefined && Date.now() - cached.at < 30000) return cached.value;
-  const hives = [
-    'HKCU\\Environment',
-    'HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment',
-  ];
-  for (const hive of hives) {
-    try {
-      const { stdout } = await execFileAsync('reg', ['query', hive, '/v', name], {
-        windowsHide: true,
-        timeout: 3000,
-        maxBuffer: 64 * 1024,
-      });
-      const line = stdout.split(/\r?\n/).find((entry) => {
-        const trimmed = entry.trim();
-        // Exact name match, not a prefix of a longer variable such as NAME_EXTRA.
-        return trimmed.startsWith(name) && /^\s/u.test(trimmed.slice(name.length));
-      });
-      const value = line === undefined ? '' : parseRegValueLine(line.trim(), name);
-      if (value !== '') {
-        persistedEnvCache.set(name, { at: Date.now(), value });
-        return value;
-      }
-    } catch {
-      // Variable absent from this hive; try the next one.
-    }
-  }
-  persistedEnvCache.set(name, { at: Date.now(), value: '' });
-  return '';
-}
-
 /**
  * Supported data dimensions. `version` is the upstream `dataDimension?version=` value.
  */
@@ -101,77 +37,73 @@ const DIMENSIONS = {
   basic_info: {
     version: 'B1',
     label: '企业基本信息',
+    short: '工商',
     hint: '工商注册、法定代表人、注册资本、成立日期、统一社会信用代码、注册地址、经营范围、经营状态、行业分类',
   },
   shareholders: {
     version: 'B2',
     label: '企业股东信息',
+    short: '股东',
     hint: '股东名单、持股比例、认缴出资额、股东类型（自然人/法人）、认缴日期、出资方式',
   },
   executives: {
     version: 'B3',
     label: '企业高级职员',
+    short: '高管',
     hint: '董事、监事、高管及法定代表人，含姓名、职务、持股比例',
   },
   investments: {
     version: 'B4',
     label: '企业对外投资',
+    short: '对外投资',
     hint: '被投公司列表，含持股比例、被投企业经营状态、成立日期、注册资本、法定代表人',
   },
   changes: {
     version: 'B5',
     label: '企业工商变更',
+    short: '变更',
     hint: '工商登记变更历史：变更项目、变更前、变更后、变更日期',
   },
   executed: {
     version: 'C2',
     label: '被执行人',
+    short: '被执行',
     hint: '被执行案件：执行法院、执行标的、案号、立案日期',
   },
   dishonest: {
     version: 'C3',
     label: '失信被执行人',
+    short: '失信',
     hint: '失信被执行人记录：失信情形、执行依据、发布法院、发布日期',
   },
   limit_consumption: {
     version: 'C4',
     label: '限制高消费',
+    short: '限高',
     hint: '限制高消费记录：限制内容、执行法院、案号、发布日期',
   },
   abnormal_operation: {
     version: 'D1',
     label: '经营异常',
+    short: '经营异常',
     hint: '经营异常名录：列入原因、列入日期、作出决定机关、移出信息',
   },
   serious_illegal: {
     version: 'D2',
     label: '严重违法',
+    short: '严重违法',
     hint: '严重违法失信名单：违法类型、列入原因、列入日期、作出决定机关',
   },
   admin_penalty: {
     version: 'D11',
     label: '行政处罚',
+    short: '行政处罚',
     hint: '行政处罚记录：决定书文号、处罚事由、处罚结果、处罚机关、处罚日期',
   },
 };
 
 /** Dimension keys in declaration order (the tool's enum). */
 const DIMENSION_KEYS = Object.keys(DIMENSIONS);
-
-/** Compact labels for the dimension parameter description (model-facing, keep short). */
-const DIMENSION_SHORT = {
-  basic_info: '工商',
-  shareholders: '股东',
-  executives: '高管',
-  investments: '对外投资',
-  changes: '变更',
-  executed: '被执行',
-  dishonest: '失信',
-  limit_consumption: '限高',
-  abnormal_operation: '经营异常',
-  serious_illegal: '严重违法',
-  admin_penalty: '行政处罚',
-};
 
 /** Thrown for upstream/HTTP failures; carries the machine-readable detail. */
 class FengniaoApiError extends Error {
@@ -185,7 +117,8 @@ class FengniaoApiError extends Error {
 
 /** Read a non-empty trimmed string, else the fallback. */
 function text(value, fallback) {
-  return typeof value === 'string' && value.trim() !== '' ? value.trim() : fallback;
+  const trimmed = typeof value === 'string' ? value.trim() : '';
+  return trimmed === '' ? fallback : trimmed;
 }
 
 /** Clamp a config number into `[MIN_TIMEOUT_MS, MAX_TIMEOUT_MS]`. */
@@ -209,78 +142,50 @@ function normalizeConfig(raw) {
     baseUrl = DEFAULT_BASE_URL;
   }
   return {
-    apiKey: typeof config.apiKey === 'string' ? config.apiKey.trim() : '',
+    apiKey: text(config.apiKey, ''),
     credentialRef: text(config.credentialRef, DEFAULT_CREDENTIAL_REF),
-    apiKeyEnv: text(config.apiKeyEnv, DEFAULT_API_KEY_ENV),
     baseUrl,
     timeoutMs: timeoutOf(config.timeoutMs),
-    // Environment variables are a legacy fallback only; the credential store
-    // stays authoritative. Set allowEnvFallback: false to ignore them entirely.
-    allowEnvFallback: config.allowEnvFallback !== false,
   };
 }
 
 /** Last four characters only — a hint that never reconstructs the key. */
 function maskKey(key) {
-  const value = typeof key === 'string' ? key.trim() : '';
-  if (value === '') return '';
-  if (value.length <= 4) return '••••';
-  return `••••${value.slice(-4)}`;
+  if (key === '') return '';
+  return key.length <= 4 ? '••••' : `••••${key.slice(-4)}`;
 }
 
-/** Read the legacy environment key: the launch environment first, then the persisted Windows value. */
-async function readEnvironmentKey(config) {
-  const fromProcess = typeof process.env[config.apiKeyEnv] === 'string' ? process.env[config.apiKeyEnv].trim() : '';
-  if (fromProcess !== '') return fromProcess;
-  return await readPersistedWindowsEnv(config.apiKeyEnv);
-}
-
-/** Resolve the key from the credential store or the legacy launch environment. */
-async function readStoredKey(ctx, config) {
-  const credentials = ctx.get('credentials');
-  if (credentials !== void 0 && typeof credentials.resolve === 'function') {
-    try {
-      const resolved = await credentials.resolve(config.credentialRef);
-      const value = typeof resolved === 'string' ? resolved : resolved?.value;
-      if (typeof value === 'string' && value.trim() !== '') {
-        // The provider layers env/.env under its managed file; keep that visible so
-        // the card never claims a store entry for an ambient variable.
-        const providerSource =
-          typeof resolved === 'object' && resolved !== null && typeof resolved.source === 'string'
-            ? resolved.source
-            : 'file';
-        return { key: value.trim(), source: providerSource === 'file' ? 'credential' : 'credentialEnv' };
-      }
-    } catch {
-      // Fall through to the environment.
-    }
-  }
-  if (!config.allowEnvFallback) return { key: '', source: 'none' };
-  const fromEnvironment = await readEnvironmentKey(config);
-  if (fromEnvironment !== '') return { key: fromEnvironment, source: 'env' };
-  return { key: '', source: 'none' };
-}
-
-/** Resolve one call's key: literal config first, then the credential store, then the environment. */
+/** Resolve one call's key from literal config or the Harness credential service. */
 async function resolveApiKey(ctx, config) {
   if (config.apiKey !== '') return { key: config.apiKey, source: 'config' };
-  return await readStoredKey(ctx, config);
+  const credentials = ctx.get('credentials');
+  if (typeof credentials?.resolve === 'function') {
+    try {
+      const resolved = await credentials.resolve(config.credentialRef);
+      const key = text(typeof resolved === 'string' ? resolved : resolved?.value, '');
+      if (key !== '') {
+        // Harness also resolves references from its environment layers. Only
+        // file-backed results can be cleared by the settings card.
+        const fromEnvironment = typeof resolved?.source === 'string' && resolved.source !== 'file';
+        return { key, source: fromEnvironment ? 'credentialEnv' : 'credential' };
+      }
+    } catch {
+      // A credential provider that cannot resolve the reference leaves it unconfigured.
+    }
+  }
+  return { key: '', source: 'none' };
 }
 
 /** Key status for the settings card; never returns the key itself. */
 async function keyStatus(ctx, config) {
-  const resolved = await resolveApiKey(ctx, config);
-  const envKey = await readEnvironmentKey(config);
+  const { key, source } = await resolveApiKey(ctx, config);
   return {
     ok: true,
-    configured: resolved.key !== '',
-    source: resolved.source,
-    hint: maskKey(resolved.key),
+    configured: key !== '',
+    source,
+    hint: maskKey(key),
     baseUrl: config.baseUrl,
     credentialRef: config.credentialRef,
-    apiKeyEnv: config.apiKeyEnv,
-    allowEnvFallback: config.allowEnvFallback,
-    envAvailable: envKey !== '',
   };
 }
 
@@ -350,7 +255,7 @@ function describeApiFailure(payload) {
     if (/上限|额度|次数/u.test(message)) {
       return `${message}。当前账号当日接口额度已用完；额度以风鸟 Web 端 API Key 页面展示为准，不要重试。`;
     }
-    return `${message}。API Key 未配置或无效：请在 DSH「插件」页打开“风鸟企业查询”，在配置卡片中粘贴风鸟 Web 端生成的个人 API Key（账户设置 → API Key）；如果 Key 在旧环境变量里，点「从环境变量导入到凭据库」。`;
+    return `${message}。请在风鸟 Web 端的「账户设置 → API Key」确认 Key 和当日额度，再到 DSH「插件 → 风鸟企业查询」检查已配置的 Key。`;
   }
   if (code === 8888) {
     return `${message}。entid 或参数错误：请先调用 fengniao_search_company 重新获取 entid，再重试本维度查询。`;
@@ -565,7 +470,7 @@ function registerTools(ctx, config) {
         kind: 'search',
         query: typeof value.query === 'string' ? value.query.slice(0, 200) : value.query,
         count: value.count,
-        candidates: value.candidates.slice(0, 20).map((candidate) => ({
+        candidates: value.candidates.slice(0, SEARCH_LIMIT).map((candidate) => ({
           ...(typeof candidate.name === 'string' ? { name: candidate.name.slice(0, 200) } : {}),
           ...(typeof candidate.entid === 'string' ? { entid: candidate.entid.slice(0, 200) } : {}),
           ...(typeof candidate.status === 'string' ? { status: candidate.status.slice(0, 200) } : {}),
@@ -609,7 +514,7 @@ function registerTools(ctx, config) {
         dimension: {
           type: 'string',
           enum: DIMENSION_KEYS,
-          description: `维度：${DIMENSION_KEYS.map((key) => `${key} ${DIMENSION_SHORT[key]}`).join('、')}。`,
+          description: `维度：${DIMENSION_KEYS.map((key) => `${key} ${DIMENSIONS[key].short}`).join('、')}。`,
         },
       },
       required: ['entid', 'dimension'],
@@ -688,19 +593,15 @@ function registerTools(ctx, config) {
 
   ctx.effect(() => ctx.tools.register(searchTool), 'fengniao: fengniao_search_company');
   ctx.effect(() => ctx.tools.register(dimensionTool), 'fengniao: fengniao_company_dimension');
-  return [searchTool.name, dimensionTool.name];
 }
 
 /** Exported for local rendering checks and tests; not part of the plugin contract. */
-export { countRecords, dimensionState, parseRegValueLine, renderDimension, renderSearch };
+export { countRecords, dimensionState, renderDimension, renderSearch };
 
 const API_KEY_MISSING_MESSAGE = [
   '尚未配置风鸟 API Key。',
-  '获取方式：登录风鸟 Web 端，在「账户设置 → API Key」生成个人 API Key（完整 Key 只展示一次）。',
-  '配置方式（推荐第 1 种，不要再用环境变量）：',
-  '1) 在 DSH「插件」页打开“风鸟企业查询”，在配置卡片中粘贴 API Key 并保存（写入本机 Harness 凭据库，不落配置文件、不回显）；',
-  '2) 如果 Key 仍在旧的环境变量里：在插件页卡片点「从环境变量导入到凭据库」；或设置环境变量后重启 Harness（旧方式，仅作兜底）；',
-  '3) 在本 profile 的 cordis.patch.yml 中为 fengniao-company-search 行设置 config.apiKey。',
+  '登录风鸟 Web 端，在「账户设置 → API Key」生成个人 API Key。',
+  '打开 DSH「插件 → 风鸟企业查询」，粘贴并保存到 Harness 凭据库。也可以在 profile 的 cordis.patch.yml 中为 fengniao-company-search 设置 config.apiKey。',
 ].join('\n');
 
 /** JSON response helper. */
@@ -789,22 +690,8 @@ function registerRoutes(ctx, webServer, config) {
       }
       if (req.method === 'POST' && sub === '/settings') {
         const body = await readJsonBody(req);
-        let imported = false;
         if (body.clear === true) {
           await writeApiKey(ctx, config, '');
-        } else if (body.importFromEnv === true) {
-          // One-click migration: copy the legacy environment key into the
-          // Harness credential store without ever returning it to the page.
-          const envKey = await readEnvironmentKey(config);
-          if (envKey === '') {
-            sendJson(res, 200, {
-              ok: false,
-              error: `环境变量 ${config.apiKeyEnv} 中没有可导入的 Key；请直接把 Key 粘贴到输入框保存。`,
-            });
-            return;
-          }
-          await writeApiKey(ctx, config, envKey);
-          imported = true;
         } else if (typeof body.apiKey === 'string') {
           const apiKey = body.apiKey.trim();
           if (apiKey === '') {
@@ -813,19 +700,15 @@ function registerRoutes(ctx, webServer, config) {
           }
           await writeApiKey(ctx, config, apiKey);
         } else {
-          sendJson(res, 200, { ok: false, error: '缺少 apiKey、clear 或 importFromEnv 字段' });
+          sendJson(res, 200, { ok: false, error: '缺少 apiKey 或 clear 字段' });
           return;
         }
-        sendJson(res, 200, {
-          ...(await keyStatus(ctx, config)),
-          saved: true,
-          ...(imported ? { imported: true } : {}),
-        });
+        sendJson(res, 200, { ...(await keyStatus(ctx, config)), saved: true });
         return;
       }
       if (req.method === 'POST' && sub === '/test') {
         const body = await readJsonBody(req);
-        const override = typeof body.apiKey === 'string' ? body.apiKey.trim() : '';
+        const override = text(body.apiKey, '');
         const resolved = override !== '' ? { key: override, source: 'input' } : await resolveApiKey(ctx, config);
         if (resolved.key === '') {
           sendJson(res, 200, { ok: false, httpStatus: 0, apiCode: null, msg: '尚未配置 API Key，无法测试。', latencyMs: 0, source: resolved.source });
@@ -838,7 +721,6 @@ function registerRoutes(ctx, webServer, config) {
             apiKey: resolved.key,
             endpoint: '/skills/searchHint',
             params: { key: '腾讯' },
-            signal: new AbortController().signal,
           });
           const apiCode = Number.isFinite(Number(payload.code)) ? Number(payload.code) : null;
           // A healthy search answers code 20000 / "成功"; only `success: false`,

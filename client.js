@@ -28,7 +28,6 @@ window.__ModuleLoader__.load({
         'source.credential': 'Harness credentials',
         'source.credentialEnv': 'Harness credentials (env)',
         'source.config': 'plugin config',
-        'source.env': 'environment variable',
         'source.none': 'none',
         keyLabel: 'API key',
         keyPlaceholder: 'Paste the personal API key generated in Fengniao',
@@ -42,19 +41,14 @@ window.__ModuleLoader__.load({
         saved: 'API key saved.',
         cleared: 'API key removed.',
         testOk: 'Connection works',
-        testFailed: 'Connection failed',
         loadFailed: 'The configuration route is unreachable. Reload the page and retry.',
         invalidDraft: 'Paste a complete API key first.',
         hintStorage:
-          'Save the key here: it goes to the local Harness credential store (never written to the profile settings file, never echoed back) and only the last characters are shown. The legacy FN_API_KEY environment variable is still read as a fallback only.',
+          'Save your API key to the local Harness credential store. The card displays a masked key.',
         hintGenerate:
           'Generate the key in the Fengniao web console under Account settings → API Key; the full key is shown only once.',
         endpoint: 'Endpoint',
         quota: 'Each dimension query consumes one Fengniao request from the account daily quota.',
-        'env.hint': 'The key currently comes from the environment variable {env}. Store it in the Harness credential store instead, then delete the variable.',
-        'env.import': 'Import from environment',
-        'env.importing': 'Importing…',
-        'env.afterImport': 'Imported into the Harness credential store. You can now delete the environment variable.',
         'tool.search': 'Fengniao search',
         'tool.dimension': 'Fengniao dimension',
         'tool.preparing': 'Preparing…',
@@ -84,7 +78,6 @@ window.__ModuleLoader__.load({
         'source.credential': 'Harness 凭据库',
         'source.credentialEnv': 'Harness 凭据库（环境变量）',
         'source.config': '插件配置',
-        'source.env': '环境变量',
         'source.none': '无',
         keyLabel: 'API Key',
         keyPlaceholder: '粘贴风鸟 Web 端生成的个人 API Key',
@@ -98,19 +91,14 @@ window.__ModuleLoader__.load({
         saved: 'API Key 已保存。',
         cleared: 'API Key 已清除。',
         testOk: '连接正常',
-        testFailed: '连接失败',
         loadFailed: '配置接口不可达，请刷新页面重试。',
         invalidDraft: '请先粘贴完整的 API Key。',
         hintStorage:
-          '推荐在这里保存：Key 写入本机 Harness 凭据库（不写入 profile 配置文件、不回显），页面只显示尾号。环境变量 FN_API_KEY 仅作为旧方式的兜底；如果 Key 在环境变量里，点「从环境变量导入到凭据库」后可以把它删掉。',
+          'API Key 保存到本机 Harness 凭据库，页面只显示掩码和尾号。',
         hintGenerate:
           'Key 获取方式：风鸟 Web 端「账户设置 → API Key」生成个人 API Key，完整 Key 仅展示一次。',
         endpoint: '接口地址',
         quota: '每次维度查询消耗一次风鸟账号当日额度。',
-        'env.hint': '当前 Key 来自环境变量 {env}。建议导入到 Harness 凭据库，然后删除该环境变量。',
-        'env.import': '从环境变量导入到凭据库',
-        'env.importing': '导入中…',
-        'env.afterImport': '已导入 Harness 凭据库，现在可以删除该环境变量了。',
         'tool.search': '风鸟检索',
         'tool.dimension': '风鸟维度',
         'tool.preparing': '准备中…',
@@ -165,15 +153,28 @@ window.__ModuleLoader__.load({
       };
     }
 
-    /** Read one JSON response, rejecting non-2xx and `ok: false` payloads. */
-    async function readJson(response) {
+    /** Call the same-origin configuration routes with the plugin header. */
+    async function requestSettings(path, body) {
+      const headers = { accept: 'application/json', 'x-fengniao-plugin': '1' };
+      const options = { cache: 'no-store', headers };
+      if (body !== undefined) {
+        headers['content-type'] = 'application/json';
+        options.method = 'POST';
+        options.body = JSON.stringify(body);
+      }
+      const response = await fetch(`${ROUTE}${path}`, options);
+      const httpMessage = `HTTP ${response.status}`;
       let payload;
       try {
         payload = await response.json();
       } catch {
-        throw new Error(`HTTP ${response.status}`);
+        throw new Error(httpMessage);
       }
-      if (!response.ok) throw new Error(typeof payload?.error === 'string' ? payload.error : `HTTP ${response.status}`);
+      if (!response.ok || payload?.ok !== true) {
+        const message = payload?.error || payload?.msg || httpMessage;
+        const code = typeof payload?.apiCode === 'number' ? ` · code ${payload.apiCode}` : '';
+        throw new Error(`${message}${code}`);
+      }
       return payload;
     }
 
@@ -193,12 +194,7 @@ window.__ModuleLoader__.load({
 
       const load = React.useCallback(async () => {
         try {
-          const response = await fetch(`${ROUTE}/settings`, {
-            cache: 'no-store',
-            headers: { accept: 'application/json', 'x-fengniao-plugin': '1' },
-          });
-          const payload = await readJson(response);
-          applyStatus(payload);
+          applyStatus(await requestSettings('/settings'));
         } catch {
           if (!mounted.current) return;
           setPhase('error');
@@ -223,7 +219,7 @@ window.__ModuleLoader__.load({
             const result = await request();
             if (!mounted.current) return;
             setNotice(describe(result));
-            if (result?.ok !== false && typeof result?.configured === 'boolean') applyStatus(result);
+            if (typeof result.configured === 'boolean') applyStatus(result);
           } catch (error) {
             if (!mounted.current) return;
             setNotice({ tone: 'error', text: error instanceof Error ? error.message : String(error) });
@@ -234,7 +230,7 @@ window.__ModuleLoader__.load({
         [applyStatus],
       );
 
-      return { phase, status, busy, notice, setNotice, load, run };
+      return { phase, status, busy, notice, setNotice, run };
     }
 
     /* -------------------------------------------------------------- */
@@ -900,15 +896,10 @@ window.__ModuleLoader__.load({
     /** The configuration card rendered in the bundle's page on the Plugins page. */
     function FengniaoConfigCard(props) {
       const t = React.useMemo(() => makeTranslator(props?.t), [props?.t]);
-      const { phase, status, busy, notice, setNotice, load, run } = useSettingsCard();
+      const { phase, status, busy, notice, setNotice, run } = useSettingsCard();
       const [draft, setDraft] = React.useState('');
       const ready = phase === 'ready' && status !== null;
       const configured = ready && status.configured === true;
-      const envName =
-        ready && typeof status.apiKeyEnv === 'string' && status.apiKeyEnv !== '' ? status.apiKeyEnv : 'FN_API_KEY';
-      // The key is still only in the legacy environment variable: offer a one-click migration.
-      const envImportable =
-        ready && status.envAvailable === true && (status.source === 'env' || status.source === 'none');
 
       React.useEffect(() => {
         if (phase === 'error') setNotice({ tone: 'error', text: t('loadFailed') });
@@ -923,18 +914,8 @@ window.__ModuleLoader__.load({
         }
         void run(
           'save',
-          async () => {
-            const response = await fetch(`${ROUTE}/settings`, {
-              method: 'POST',
-              cache: 'no-store',
-              headers: { 'content-type': 'application/json', accept: 'application/json', 'x-fengniao-plugin': '1' },
-              body: JSON.stringify({ apiKey }),
-            });
-            const payload = await readJson(response);
-            if (payload.ok === false) throw new Error(payload.error ?? 'save failed');
-            return payload;
-          },
-          (result) => {
+          () => requestSettings('/settings', { apiKey }),
+          () => {
             setDraft('');
             return { tone: 'ok', text: t('saved') };
           },
@@ -944,21 +925,7 @@ window.__ModuleLoader__.load({
       const test = React.useCallback(() => {
         void run(
           'test',
-          async () => {
-            const response = await fetch(`${ROUTE}/test`, {
-              method: 'POST',
-              cache: 'no-store',
-              headers: { 'content-type': 'application/json', accept: 'application/json', 'x-fengniao-plugin': '1' },
-              body: JSON.stringify({}),
-            });
-            const payload = await readJson(response);
-            if (payload.ok !== true) {
-              const detail = typeof payload.msg === 'string' && payload.msg !== '' ? payload.msg : t('testFailed');
-              const code = payload.apiCode === null || payload.apiCode === undefined ? '' : ` · code ${payload.apiCode}`;
-              throw new Error(`${detail}${code}`);
-            }
-            return payload;
-          },
+          () => requestSettings('/test', {}),
           (result) => ({
             tone: 'ok',
             text: `${t('testOk')} · HTTP ${result.httpStatus} · ${result.latencyMs}ms`,
@@ -970,44 +937,14 @@ window.__ModuleLoader__.load({
         if (typeof window !== 'undefined' && typeof window.confirm === 'function' && !window.confirm(t('confirmClear'))) return;
         void run(
           'clear',
-          async () => {
-            const response = await fetch(`${ROUTE}/settings`, {
-              method: 'POST',
-              cache: 'no-store',
-              headers: { 'content-type': 'application/json', accept: 'application/json', 'x-fengniao-plugin': '1' },
-              body: JSON.stringify({ clear: true }),
-            });
-            const payload = await readJson(response);
-            if (payload.ok === false) throw new Error(payload.error ?? 'clear failed');
-            return payload;
-          },
+          () => requestSettings('/settings', { clear: true }),
           () => ({ tone: 'ok', text: t('cleared') }),
-        );
-      }, [run, t]);
-
-      // Move the legacy environment key into the Harness credential store without
-      // ever handling the secret in the page: the Host reads it and writes it.
-      const importFromEnv = React.useCallback(() => {
-        void run(
-          'import',
-          async () => {
-            const response = await fetch(`${ROUTE}/settings`, {
-              method: 'POST',
-              cache: 'no-store',
-              headers: { 'content-type': 'application/json', accept: 'application/json', 'x-fengniao-plugin': '1' },
-              body: JSON.stringify({ importFromEnv: true }),
-            });
-            const payload = await readJson(response);
-            if (payload.ok === false) throw new Error(payload.error ?? 'import failed');
-            return payload;
-          },
-          () => ({ tone: 'ok', text: t('env.afterImport') }),
         );
       }, [run, t]);
 
       const canSave = draft.trim() !== '' && busy === '';
       const canTest = configured && busy === '';
-      const canClear = configured && status?.source === 'credential' && busy === '';
+      const hasStoredKey = configured && status.source === 'credential';
 
       return h(
         'div',
@@ -1018,9 +955,6 @@ window.__ModuleLoader__.load({
           h('span', { className: 'fcs_title' }, '风鸟企业查询', h('span', { className: 'fcs_titleEn' }, ' · Fengniao')),
           h(StatusChip, { t, status: ready ? status : null }),
         ),
-        ready && status.source === 'env'
-          ? h('p', { className: 'fcs_envHint' }, t('env.hint').replace('{env}', envName))
-          : null,
         h(
           'label',
           { className: 'fcs_field' },
@@ -1055,14 +989,7 @@ window.__ModuleLoader__.load({
             { type: 'button', className: 'fcs_button', disabled: !canTest, onClick: test },
             busy === 'test' ? t('testing') : t('test'),
           ),
-          envImportable
-            ? h(
-                'button',
-                { type: 'button', className: 'fcs_button', disabled: busy !== '', onClick: importFromEnv },
-                busy === 'import' ? t('env.importing') : t('env.import'),
-              )
-            : null,
-          canClear
+          hasStoredKey
             ? h(
                 'button',
                 { type: 'button', className: 'fcs_button fcs_danger', disabled: busy !== '', onClick: clear },
@@ -1107,7 +1034,6 @@ window.__ModuleLoader__.load({
 .fcs_notice[data-tone=error]{color:var(--dsw-alias-state-error-primary)}
 .fcs_hint{color:var(--dsw-alias-label-tertiary);margin:0;font-size:11px;line-height:1.6}
 .fcs_meta{color:var(--dsw-alias-label-tertiary);margin:0;font-size:11px;line-height:1.6;word-break:break-all}
-.fcs_envHint{color:var(--dsw-alias-label-secondary);margin:0;font-size:11px;line-height:1.6}
 .fcs_chip[data-tone=muted]{color:var(--dsw-alias-label-tertiary)}
 .fct_root{display:flex;flex-direction:column}
 .fct_visuallyHidden{clip:rect(0 0 0 0);white-space:nowrap;width:1px;height:1px;position:absolute;overflow:hidden}

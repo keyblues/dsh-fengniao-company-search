@@ -13,7 +13,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { apply, countRecords, dimensionState, parseRegValueLine, renderDimension, renderSearch } from '../index.js';
+import { apply, countRecords, dimensionState, renderDimension, renderSearch } from '../index.js';
 
 const ROUTE = '/plugins/fengniao-company-search';
 
@@ -229,12 +229,6 @@ test('isApiFailure also treats bare 8888/9999 envelopes as failures', async () =
   );
 });
 
-test('parseRegValueLine keeps empty values empty and spaced values whole', () => {
-  assert.equal(parseRegValueLine('FN_API_KEY    REG_SZ    fn_sk_abc', 'FN_API_KEY'), 'fn_sk_abc');
-  assert.equal(parseRegValueLine('FN_API_KEY    REG_SZ', 'FN_API_KEY'), '');
-  assert.equal(parseRegValueLine('FN_API_KEY    REG_SZ    fn sk  abc', 'FN_API_KEY'), 'fn sk  abc');
-});
-
 test('dimensionState classifies record, empty, and unknown payloads', () => {
   assert.equal(dimensionState(null), 'empty');
   assert.equal(dimensionState([]), 'empty');
@@ -257,8 +251,9 @@ test('settings route rejects requests without the plugin header', async () => {
   assert.equal(response.record.status, 403);
 });
 
-test('settings route reports status without echoing the key', async () => {
-  const { routes } = activate({ apiKey: 'test-key' });
+test('settings status prefers the explicit key and masks it', async () => {
+  const credentials = makeCredentialStore({ FENGNIAO_API_KEY: 'stored-key-123456' });
+  const { routes } = activate({ apiKey: 'test-key' }, { credentials });
   const route = routes.find((entry) => entry.path === ROUTE && entry.kind === 'prefix');
   const response = makeResponse();
   await route.handler(
@@ -292,7 +287,7 @@ test('settings route fails loudly when the credential store cannot clear', async
 });
 
 /* ---------------------------------------------------------------- */
-/* Credential store migration                                        */
+/* Credential settings                                               */
 /* ---------------------------------------------------------------- */
 
 /** In-memory stand-in for the Harness credential service. */
@@ -328,35 +323,32 @@ async function callSettings(routes, { method = 'GET', body } = {}) {
   return { status: response.record.status, payload: JSON.parse(response.record.body) };
 }
 
-test('settings route imports the legacy environment key into the credential store', async () => {
-  const previous = process.env.FN_API_KEY;
-  process.env.FN_API_KEY = 'env-imported-key-123456';
-  try {
-    const credentials = makeCredentialStore();
-    const { routes } = activate({}, { credentials });
-    const { status, payload } = await callSettings(routes, { method: 'POST', body: { importFromEnv: true } });
-
-    assert.equal(status, 200);
-    assert.equal(payload.imported, true);
-    assert.equal(payload.source, 'credential');
-    assert.equal(credentials.values.get('FENGNIAO_API_KEY'), 'env-imported-key-123456');
-    // The secret never travels back to the page.
-    assert.equal(payload.hint, '••••3456');
-  } finally {
-    if (previous === undefined) delete process.env.FN_API_KEY;
-    else process.env.FN_API_KEY = previous;
-  }
-});
-
-test('allowEnvFallback: false ignores the environment key', async () => {
+test('the legacy environment key configures neither settings nor tool calls', async (t) => {
   const previous = process.env.FN_API_KEY;
   process.env.FN_API_KEY = 'env-only-key-123456';
   try {
-    const { routes } = activate({ allowEnvFallback: false });
-    const { payload } = await callSettings(routes);
-    assert.equal(payload.configured, false);
-    assert.equal(payload.source, 'none');
-    assert.equal(payload.envAvailable, true);
+    const fetch = t.mock.method(globalThis, 'fetch', async () => new Response(JSON.stringify(SEARCH_ENVELOPE)));
+    for (const config of [{}, { apiKeyEnv: 'FN_API_KEY', allowEnvFallback: true }]) {
+      const { routes, tools } = activate(config, { credentials: makeCredentialStore() });
+      const { payload } = await callSettings(routes);
+      assert.deepEqual(payload, {
+        ok: true,
+        configured: false,
+        source: 'none',
+        hint: '',
+        baseUrl: 'https://m.riskbird.com/prod-qbb-api',
+        credentialRef: 'FENGNIAO_API_KEY',
+      });
+      await assert.rejects(
+        tools.get('fengniao_search_company').execute({ keyword: '腾讯' }, exec),
+        /尚未配置风鸟 API Key/u,
+      );
+      await assert.rejects(
+        tools.get('fengniao_company_dimension').execute({ entid: 'entid-1', dimension: 'basic_info' }, exec),
+        /尚未配置风鸟 API Key/u,
+      );
+    }
+    assert.equal(fetch.mock.calls.length, 0);
   } finally {
     if (previous === undefined) delete process.env.FN_API_KEY;
     else process.env.FN_API_KEY = previous;
@@ -381,24 +373,26 @@ test('POST /settings saves a pasted key and an empty one is rejected', async () 
 
 test('POST /settings clear removes the stored key', async () => {
   const credentials = makeCredentialStore({ FENGNIAO_API_KEY: 'stored-key-123456' });
-  // This machine persists FN_API_KEY, so pin the environment fallback off to make
-  // the "nothing configured" outcome deterministic.
-  const { routes } = activate({ allowEnvFallback: false }, { credentials });
+  const { routes } = activate({}, { credentials });
   const { payload } = await callSettings(routes, { method: 'POST', body: { clear: true } });
   assert.equal(payload.configured, false);
   assert.equal(payload.source, 'none');
   assert.equal(credentials.values.size, 0);
 });
 
-test('import from an absent environment variable reports guidance instead of failing', async () => {
-  const { routes } = activate({ apiKeyEnv: 'FENGNIAO_TEST_MISSING_ENV_VAR' });
+test('the removed environment import action leaves the stored key intact', async () => {
+  const credentials = makeCredentialStore({ FENGNIAO_API_KEY: 'stored-key-123456' });
+  const { routes } = activate({}, { credentials });
   const { payload } = await callSettings(routes, { method: 'POST', body: { importFromEnv: true } });
   assert.equal(payload.ok, false);
-  assert.match(payload.error, /环境变量/u);
+  assert.match(payload.error, /缺少 apiKey 或 clear 字段/u);
+  assert.equal(credentials.values.get('FENGNIAO_API_KEY'), 'stored-key-123456');
 });
 
-test('POST /test probes the upstream API and classifies failures', async () => {
-  const { routes } = activate({ apiKey: 'test-key' });
+test('POST /test probes the upstream API with a Harness credential and classifies failures', async () => {
+  const credentialRef = 'FENGNIAO_TEST_REFERENCE';
+  const credentials = makeCredentialStore({ [credentialRef]: { value: '  test-key  ', source: 'env' } });
+  const { routes } = activate({ credentialRef }, { credentials });
   const route = routes.find((entry) => entry.path === ROUTE && entry.kind === 'prefix');
   const call = async () => {
     const response = makeResponse();
@@ -415,15 +409,19 @@ test('POST /test probes the upstream API and classifies failures', async () => {
   };
   const originalFetch = globalThis.fetch;
   try {
-    globalThis.fetch = async () =>
-      new Response(JSON.stringify({ code: 20000, success: true, msg: '成功' }), {
+    globalThis.fetch = async (url) => {
+      assert.equal(url.pathname, '/prod-qbb-api/skills/searchHint');
+      assert.equal(url.searchParams.get('apikey'), 'test-key');
+      return new Response(JSON.stringify({ code: 20000, success: true, msg: '成功' }), {
         status: 200,
         headers: { 'content-type': 'application/json' },
       });
+    };
     const healthy = await call();
     assert.equal(healthy.ok, true);
     assert.equal(healthy.httpStatus, 200);
     assert.equal(healthy.apiCode, 20000);
+    assert.equal(healthy.source, 'credentialEnv');
 
     globalThis.fetch = async () =>
       new Response(JSON.stringify({ code: 9999, success: false, msg: 'apikey 不合法' }), {

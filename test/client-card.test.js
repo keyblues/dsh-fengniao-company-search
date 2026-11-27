@@ -241,8 +241,7 @@ test('client half registers the credential card and both tool cards', async () =
     assert.equal(entry.options.locale, 'fengniao-company-search');
   }
   assert.equal(dictionaries[0].namespace, 'fengniao-company-search');
-  assert.equal(dictionaries[0].dict.zh['env.import'], '从环境变量导入到凭据库');
-  for (const key of ['tool.output', 'tool.errorOutput']) {
+  for (const key of ['hintStorage', 'tool.output', 'tool.errorOutput']) {
     assert.equal(typeof dictionaries[0].dict.zh[key], 'string', `zh dictionary carries ${key}`);
     assert.equal(typeof dictionaries[0].dict.en[key], 'string', `en dictionary carries ${key}`);
   }
@@ -504,14 +503,13 @@ test('the config card renders the key form and reports the real credential sourc
     hint: '••••1234',
     baseUrl: 'https://example.test',
     credentialRef: 'FENGNIAO_API_KEY',
-    apiKeyEnv: 'FN_API_KEY',
-    allowEnvFallback: true,
-    envAvailable: true,
   };
   const calls = [];
+  const originalFetch = globalThis.fetch;
   globalThis.fetch = async (url, init) => {
     calls.push({ url: String(url), init });
-    return { ok: true, status: 200, json: async () => payload };
+    const result = String(url).endsWith('/test') ? { ok: true, httpStatus: 200, latencyMs: 12 } : payload;
+    return { ok: true, status: 200, json: async () => result };
   };
   try {
     react.reset();
@@ -530,23 +528,26 @@ test('the config card renders the key form and reports the real credential sourc
     assert.match(chipText, /status\.configured/u);
     assert.match(chipText, /source\.credentialEnv/u, 'an env-sourced provider value is labelled as such');
     assert.match(chipText, /••••1234/u, 'only the masked hint is shown');
-    assert.equal(textsOf(ready).join('|').includes('env.import'), false, 'no import button for a credential-store value');
+    assert.deepEqual(textsOf(byClass(ready, 'fcs_actions')), ['«save»', '«test»']);
     assert.ok(calls.length >= 1);
     assert.equal(calls[0].init.headers['x-fengniao-plugin'], '1');
     assert.equal(String(calls[0].url).endsWith('/settings'), true);
 
-    // M2: the legacy environment source does offer the migration button.
-    payload.source = 'env';
-    react.begin();
-    card({ t });
+    const testButton = find(ready, (node) => node.type === 'button' && node.props.children === '«test»');
+    assert.equal(testButton.props.disabled, false);
+    testButton.props.onClick();
+    const probe = calls.find((call) => call.url.endsWith('/test'));
+    assert.equal(probe.init.method, 'POST');
+    assert.equal(probe.init.headers['x-fengniao-plugin'], '1');
+    assert.deepEqual(JSON.parse(probe.init.body), {});
     await new Promise((resolve) => setImmediate(resolve));
+
+    payload.source = 'credential';
     react.begin();
-    const envCard = card({ t });
-    const envChip = find(envCard, (node) => typeof node.type === 'function' && node.type.name === 'StatusChip');
-    assert.match(textsOf(envChip.type({ t, status: envChip.props.status })).join('|'), /source\.env/u);
-    assert.match(textsOf(envCard).join('|'), /env\.import/u);
+    const stored = card({ t });
+    assert.deepEqual(textsOf(byClass(stored, 'fcs_actions')), ['«save»', '«test»', '«clear»']);
   } finally {
-    delete globalThis.fetch;
+    globalThis.fetch = originalFetch;
   }
 });
 
